@@ -6,7 +6,7 @@
 //  option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::io::{self, StdoutLock, Write};
 use std::ops::Range;
 
@@ -58,7 +58,7 @@ where
 /// A two vector, representing sizes and positions in the terminal.
 ///
 /// It is implicitly convertable from `(u16, u16)` because that is what crossterm uses for sizes.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Vec2 {
     x: usize,
     y: usize,
@@ -78,8 +78,11 @@ struct UiState<'a> {
     /// The lines of the document.
     document: Vec<String>,
 
+    /// The length of the longest line in `document.
+    max_line_len: usize,
+
     /// The offset into `document`.
-    offset: usize,
+    offset: Vec2,
 
     /// Whether or not yap should exit.
     should_exit: bool,
@@ -96,7 +99,8 @@ impl<'a> UiState<'a> {
     pub fn new(stdout: StdoutLock<'a>, size: Vec2) -> Self {
         UiState {
             document: Vec::with_capacity(size.y),
-            offset: 0,
+            max_line_len: 0,
+            offset: Vec2::default(),
             should_exit: false,
             size,
             stdout,
@@ -161,9 +165,10 @@ impl<'a> UiState<'a> {
     /// The line will be displayed if there is room to draw it.
     pub fn handle_line(&mut self, line: String) -> crossterm::Result<()> {
         let index = self.document.len();
+        self.max_line_len = max(self.max_line_len, line.chars().count());
         self.document.push(line);
 
-        if self.document_pane().contains(&index) {
+        if self.document_pane_rows().contains(&index) {
             self.queue_line(index)?;
             self.stdout.flush()?;
         }
@@ -173,8 +178,8 @@ impl<'a> UiState<'a> {
 
     /// Scroll down by one line if there is at least one more line of text off-screen.
     fn scroll_down(&mut self) -> crossterm::Result<()> {
-        if self.document.len() > self.offset + self.document_pane().len() {
-            self.offset += 1;
+        if self.document.len() > self.offset.y + self.document_pane_rows().len() {
+            self.offset.y += 1;
             self.redraw_document()?;
         }
 
@@ -183,8 +188,8 @@ impl<'a> UiState<'a> {
 
     /// Scroll up by one line if we are not at the top of the document.
     fn scroll_up(&mut self) -> crossterm::Result<()> {
-        if self.offset > 0 {
-            self.offset -= 1;
+        if self.offset.y > 0 {
+            self.offset.y -= 1;
             self.redraw_document()?;
         }
 
@@ -218,7 +223,7 @@ impl<'a> UiState<'a> {
     fn redraw_document(&mut self) -> crossterm::Result<()> {
         queue!(self.stdout, cursor::MoveTo(0, 0))?;
 
-        for y in self.visible_document() {
+        for y in self.visible_document_rows() {
             self.queue_line(y)?;
         }
 
@@ -231,21 +236,48 @@ impl<'a> UiState<'a> {
     ///
     /// After queueing lines, they must be flushed with `self.stdout.flush()`.
     fn queue_line(&mut self, index: usize) -> crossterm::Result<()> {
+        let line = &self.document[index];
+        let mut char_indices = line.char_indices().map(|(idx, _)| idx);
+
+        // Find the index of the character as position `self.offset.x`. If no character exists, then
+        // this line is too short to display on screen, so we can just clear the line.
+        let start = match char_indices.nth(self.offset.x) {
+            Some(char_index) => char_index,
+            None => {
+                return queue!(
+                    self.stdout,
+                    terminal::Clear(ClearType::UntilNewLine),
+                    cursor::MoveToNextLine(1),
+                );
+            }
+        };
+
+        // If the line would be too long to display from `start`, find the index of the character
+        // one past the screen. Otherwise, we can default to the string length.
+        let end = char_indices
+            .nth(self.document_pane_cols().len())
+            .unwrap_or(line.len());
+
         queue!(
             self.stdout,
-            style::Print(&self.document[index]),
+            style::Print(&self.document[index][start..end]),
             terminal::Clear(ClearType::UntilNewLine),
             cursor::MoveToNextLine(1),
         )
     }
 
-    /// Return the range of terminal lines that are in the document pane.
-    fn document_pane(&self) -> Range<usize> {
+    /// Return the range of terminal rows that are in the document pane.
+    fn document_pane_rows(&self) -> Range<usize> {
         0..self.size.y - 2
     }
 
+    /// Return the range of terminal columns that are in the document pane.
+    fn document_pane_cols(&self) -> Range<usize> {
+        0..self.size.x - 1
+    }
+
     /// Return the indicies of the document that are visible.
-    fn visible_document(&self) -> Range<usize> {
-        self.offset..min(self.offset + self.size.y - 2, self.document.len())
+    fn visible_document_rows(&self) -> Range<usize> {
+        self.offset.y..min(self.offset.y + self.size.y - 2, self.document.len())
     }
 }
