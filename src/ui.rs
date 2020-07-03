@@ -155,6 +155,8 @@ impl<'a> UiState<'a> {
                 KeyCode::Char('j') => self.scroll_down()?,
                 KeyCode::Char('k') => self.scroll_up()?,
                 KeyCode::Char('l') => self.pan_right()?,
+                KeyCode::Char(' ') | KeyCode::PageDown => self.next_page()?,
+                KeyCode::PageUp => self.prev_page()?,
                 _ => {}
             },
         }
@@ -178,7 +180,7 @@ impl<'a> UiState<'a> {
         Ok(())
     }
 
-    /// Scroll left by one column if we are not at the first column of the document.
+    /// Pan left by one column if we are not at the first column of the document.
     fn pan_left(&mut self) -> crossterm::Result<()> {
         if self.offset.x > 0 {
             self.offset.x -= 1;
@@ -208,10 +210,40 @@ impl<'a> UiState<'a> {
         Ok(())
     }
 
-    /// Scroll right by one column if there is at least one more column of text off-screen.
+    /// Pan right by one column if there is at least one more column of text off-screen.
     fn pan_right(&mut self) -> crossterm::Result<()> {
         if self.max_line_len > self.offset.x + self.document_pane_cols().len() {
             self.offset.x += 1;
+            self.redraw_document()?;
+        }
+
+        Ok(())
+    }
+
+    /// Scroll the doucment up by up to half the height of the terminal if we are not at the top of
+    /// the document.
+    fn prev_page(&mut self) -> crossterm::Result<()> {
+        let page_size = min(self.size.y / 2, self.offset.y);
+        if self.offset.y > 0 {
+            self.offset.y -= page_size;
+            self.redraw_document()?;
+        }
+
+        Ok(())
+    }
+
+    /// Scroll the document down by up to half the height of the terminal if there is more document
+    /// to view.
+    fn next_page(&mut self) -> crossterm::Result<()> {
+        let page_size = self.size.y / 2;
+
+        if self.document.len() >= self.document_pane_rows().len() + self.offset.y + page_size {
+            // Scroll down by an entire page if we can.
+            self.offset.y += page_size;
+            self.redraw_document()?;
+        } else if self.document.len() > self.document_pane_rows().len() + self.offset.y {
+            // Otherwise, if we are not at the end of the document, then scroll to the end.
+            self.offset.y = self.document.len() - self.document_pane_rows().len();
             self.redraw_document()?;
         }
 
