@@ -78,6 +78,9 @@ struct UiState<'a> {
     /// The lines of the document.
     document: Vec<String>,
 
+    /// The offset into `document`.
+    offset: usize,
+
     /// Whether or not yap should exit.
     should_exit: bool,
 
@@ -93,6 +96,7 @@ impl<'a> UiState<'a> {
     pub fn new(stdout: StdoutLock<'a>, size: Vec2) -> Self {
         UiState {
             document: Vec::with_capacity(size.y),
+            offset: 0,
             should_exit: false,
             size,
             stdout,
@@ -143,6 +147,8 @@ impl<'a> UiState<'a> {
             Event::Resize(x, y) => self.handle_resize((x, y).into())?,
             Event::Key(key) => match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_exit = true,
+                KeyCode::Char('j') => self.scroll_down()?,
+                KeyCode::Char('k') => self.scroll_up()?,
                 _ => {}
             },
         }
@@ -160,6 +166,26 @@ impl<'a> UiState<'a> {
         if self.document_pane().contains(&index) {
             self.queue_line(index)?;
             self.stdout.flush()?;
+        }
+
+        Ok(())
+    }
+
+    /// Scroll down by one line if there is at least one more line of text off-screen.
+    fn scroll_down(&mut self) -> crossterm::Result<()> {
+        if self.document.len() > self.offset + self.document_pane().len() {
+            self.offset += 1;
+            self.redraw_document()?;
+        }
+
+        Ok(())
+    }
+
+    /// Scroll up by one line if we are not at the top of the document.
+    fn scroll_up(&mut self) -> crossterm::Result<()> {
+        if self.offset > 0 {
+            self.offset -= 1;
+            self.redraw_document()?;
         }
 
         Ok(())
@@ -183,7 +209,7 @@ impl<'a> UiState<'a> {
             self.stdout,
             cursor::MoveTo(0, (self.size.y - 1) as u16),
             style::SetAttribute(Attribute::Reverse),
-            style::Print("[yap] q to exit"),
+            style::Print("[yap] q to exit, jk to scroll"),
             style::SetAttribute(Attribute::NoReverse),
         )
     }
@@ -220,6 +246,6 @@ impl<'a> UiState<'a> {
 
     /// Return the indicies of the document that are visible.
     fn visible_document(&self) -> Range<usize> {
-        0..min(self.size.y - 2, self.document.len())
+        self.offset..min(self.offset + self.size.y - 2, self.document.len())
     }
 }
