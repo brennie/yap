@@ -6,9 +6,18 @@
 //  option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::path::PathBuf;
+mod ui;
 
+use std::path::PathBuf;
+use std::process::exit;
+
+use anyhow::{anyhow, Context};
+use crossterm::tty::IsTty;
 use structopt::StructOpt;
+use tokio::fs::File;
+use tokio::io::stdin;
+
+use crate::ui::ui;
 
 /// yap yet another pager
 ///
@@ -21,6 +30,30 @@ struct Options {
     file: Option<PathBuf>,
 }
 
+#[tokio::main]
+async fn run(options: Options) -> anyhow::Result<()> {
+    if let Some(path) = options.file {
+        let f = File::open(&path)
+            .await
+            .context(format!("Could not open `{}' for reading", path.display()))?;
+        ui(f).await?;
+    } else if !stdin().is_tty() {
+        ui(stdin()).await?;
+    } else {
+        return Err(anyhow!("yap: requires file or pipe"));
+    }
+
+    Ok(())
+}
+
 fn main() {
-    Options::from_args();
+    let options = Options::from_args();
+
+    exit(match run(options) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("yap: {:#}", e);
+            1
+        }
+    });
 }
