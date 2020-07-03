@@ -151,8 +151,10 @@ impl<'a> UiState<'a> {
             Event::Resize(x, y) => self.handle_resize((x, y).into())?,
             Event::Key(key) => match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_exit = true,
+                KeyCode::Char('h') => self.pan_left()?,
                 KeyCode::Char('j') => self.scroll_down()?,
                 KeyCode::Char('k') => self.scroll_up()?,
+                KeyCode::Char('l') => self.pan_right()?,
                 _ => {}
             },
         }
@@ -171,6 +173,16 @@ impl<'a> UiState<'a> {
         if self.document_pane_rows().contains(&index) {
             self.queue_line(index)?;
             self.stdout.flush()?;
+        }
+
+        Ok(())
+    }
+
+    /// Scroll left by one column if we are not at the first column of the document.
+    fn pan_left(&mut self) -> crossterm::Result<()> {
+        if self.offset.x > 0 {
+            self.offset.x -= 1;
+            self.redraw_document()?;
         }
 
         Ok(())
@@ -196,6 +208,16 @@ impl<'a> UiState<'a> {
         Ok(())
     }
 
+    /// Scroll right by one column if there is at least one more column of text off-screen.
+    fn pan_right(&mut self) -> crossterm::Result<()> {
+        if self.max_line_len > self.offset.x + self.document_pane_cols().len() {
+            self.offset.x += 1;
+            self.redraw_document()?;
+        }
+
+        Ok(())
+    }
+
     /// Handle a resize event.
     ///
     /// The entire screen will be cleared and re-drawn.
@@ -214,7 +236,7 @@ impl<'a> UiState<'a> {
             self.stdout,
             cursor::MoveTo(0, (self.size.y - 1) as u16),
             style::SetAttribute(Attribute::Reverse),
-            style::Print("[yap] q to exit, jk to scroll"),
+            style::Print("[yap] q to exit, hjkl to scroll/pan"),
             style::SetAttribute(Attribute::NoReverse),
         )
     }
