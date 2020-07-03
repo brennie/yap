@@ -5,4 +5,6 @@ authors = ["Barret Rennie <barret@brennie.ca>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
 
-[dependencies]
+[dependencies.structopt]
+version = "0.3.15"
+features = ["wrap_help"]
