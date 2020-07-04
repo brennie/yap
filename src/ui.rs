@@ -21,7 +21,7 @@ use futures::stream::TryStreamExt;
 use tokio::io::{AsyncRead, BufReader};
 use tokio::prelude::*;
 
-use crate::ui::document::Document;
+use crate::ui::document::{DocumentView, FileDocument};
 use crate::ui::vec2::Vec2;
 
 /// Run the yap UI.
@@ -62,7 +62,7 @@ where
 /// The current yap UI state.
 struct UiState<'a> {
     /// The document being viewed.
-    document: Document,
+    document_view: DocumentView<FileDocument>,
 
     /// Whether or not yap should exit.
     should_exit: bool,
@@ -78,10 +78,13 @@ impl<'a> UiState<'a> {
     /// Create a new UiState.
     pub fn new(stdout: StdoutLock<'a>, size: Vec2) -> Self {
         UiState {
-            document: Document::new(Vec2 {
-                x: size.x - 2,
-                y: size.y - 2,
-            }),
+            document_view: DocumentView::new(
+                FileDocument::new(size.y - 2),
+                Vec2 {
+                    x: size.x - 2,
+                    y: size.y - 2,
+                },
+            ),
             should_exit: false,
             size,
             stdout,
@@ -149,8 +152,8 @@ impl<'a> UiState<'a> {
     ///
     /// The line will be displayed if there is room to draw it.
     pub fn handle_line(&mut self, line: String) -> crossterm::Result<()> {
-        if let Some(index) = self.document.handle_line(line) {
-            self.document.queue_line(&mut self.stdout, index)?;
+        let index = self.document_view.document().push_line(line);
+        if self.document_view.queue_line_if_visible(&mut self.stdout, index)? {
             self.stdout.flush()?;
         }
 
@@ -159,34 +162,34 @@ impl<'a> UiState<'a> {
 
     /// Pan left by one column if we are not at the first column of the document.
     fn pan_left(&mut self) -> crossterm::Result<()> {
-        self.document.pan_left(&mut self.stdout)
+        self.document_view.pan_left(&mut self.stdout)
     }
 
     /// Scroll down by one line if there is at least one more line of text off-screen.
     fn scroll_down(&mut self) -> crossterm::Result<()> {
-        self.document.scroll_down(&mut self.stdout)
+        self.document_view.scroll_down(&mut self.stdout)
     }
 
     /// Scroll up by one line if we are not at the top of the document.
     fn scroll_up(&mut self) -> crossterm::Result<()> {
-        self.document.scroll_up(&mut self.stdout)
+        self.document_view.scroll_up(&mut self.stdout)
     }
 
     /// Pan right by one column if there is at least one more column of text off-screen.
     fn pan_right(&mut self) -> crossterm::Result<()> {
-        self.document.pan_right(&mut self.stdout)
+        self.document_view.pan_right(&mut self.stdout)
     }
 
     /// Scroll the doucment up by up to half the height of the terminal if we are not at the top of
     /// the document.
     fn prev_page(&mut self) -> crossterm::Result<()> {
-        self.document.prev_page(&mut self.stdout)
+        self.document_view.prev_page(&mut self.stdout)
     }
 
     /// Scroll the document down by up to half the height of the terminal if there is more document
     /// to view.
     fn next_page(&mut self) -> crossterm::Result<()> {
-        self.document.next_page(&mut self.stdout)
+        self.document_view.next_page(&mut self.stdout)
     }
 
     /// Handle a resize event.
@@ -196,11 +199,11 @@ impl<'a> UiState<'a> {
         self.size = new_size;
         execute!(self.stdout, terminal::Clear(ClearType::All))?;
         self.draw_status_bar()?;
-        self.document.resize(Vec2 {
+        self.document_view.resize(Vec2 {
             x: new_size.x - 2,
             y: new_size.y - 2,
         });
-        self.document.redraw(&mut self.stdout)
+        self.document_view.redraw(&mut self.stdout)
     }
 
     /// Draw the status bar.
