@@ -21,7 +21,7 @@ use futures::stream::TryStreamExt;
 use tokio::io::{AsyncRead, BufReader};
 use tokio::prelude::*;
 
-use crate::ui::document::{DocumentView, FileDocument};
+use crate::ui::document::{DocumentView, FileDocument, HelpDocument};
 use crate::ui::vec2::Vec2;
 
 /// Run the yap UI.
@@ -64,6 +64,8 @@ struct UiState<'a> {
     /// The document being viewed.
     document_view: DocumentView<FileDocument>,
 
+    help_view: Option<DocumentView<HelpDocument>>,
+
     /// Whether or not yap should exit.
     should_exit: bool,
 
@@ -85,6 +87,7 @@ impl<'a> UiState<'a> {
                     y: size.y - 2,
                 },
             ),
+            help_view: None,
             should_exit: false,
             size,
             stdout,
@@ -134,12 +137,13 @@ impl<'a> UiState<'a> {
             Event::Mouse(..) => unreachable!("yap does not have mouse support"),
             Event::Resize(x, y) => self.handle_resize((x, y).into())?,
             Event::Key(key) => match key.code {
-                KeyCode::Char('q') | KeyCode::Char('Q') => self.should_exit = true,
+                KeyCode::Char('q') | KeyCode::Char('Q') => self.quit()?,
                 KeyCode::Char('h') => self.pan_left()?,
                 KeyCode::Char('j') => self.scroll_down()?,
                 KeyCode::Char('k') => self.scroll_up()?,
                 KeyCode::Char('l') => self.pan_right()?,
                 KeyCode::Char(' ') | KeyCode::PageDown => self.next_page()?,
+                KeyCode::Char('?') => self.show_help()?,
                 KeyCode::PageUp => self.prev_page()?,
                 _ => {}
             },
@@ -153,43 +157,15 @@ impl<'a> UiState<'a> {
     /// The line will be displayed if there is room to draw it.
     pub fn handle_line(&mut self, line: String) -> crossterm::Result<()> {
         let index = self.document_view.document().push_line(line);
-        if self.document_view.queue_line_if_visible(&mut self.stdout, index)? {
+        if self.help_view.is_none()
+            && self
+                .document_view
+                .queue_line_if_visible(&mut self.stdout, index)?
+        {
             self.stdout.flush()?;
         }
 
         Ok(())
-    }
-
-    /// Pan left by one column if we are not at the first column of the document.
-    fn pan_left(&mut self) -> crossterm::Result<()> {
-        self.document_view.pan_left(&mut self.stdout)
-    }
-
-    /// Scroll down by one line if there is at least one more line of text off-screen.
-    fn scroll_down(&mut self) -> crossterm::Result<()> {
-        self.document_view.scroll_down(&mut self.stdout)
-    }
-
-    /// Scroll up by one line if we are not at the top of the document.
-    fn scroll_up(&mut self) -> crossterm::Result<()> {
-        self.document_view.scroll_up(&mut self.stdout)
-    }
-
-    /// Pan right by one column if there is at least one more column of text off-screen.
-    fn pan_right(&mut self) -> crossterm::Result<()> {
-        self.document_view.pan_right(&mut self.stdout)
-    }
-
-    /// Scroll the doucment up by up to half the height of the terminal if we are not at the top of
-    /// the document.
-    fn prev_page(&mut self) -> crossterm::Result<()> {
-        self.document_view.prev_page(&mut self.stdout)
-    }
-
-    /// Scroll the document down by up to half the height of the terminal if there is more document
-    /// to view.
-    fn next_page(&mut self) -> crossterm::Result<()> {
-        self.document_view.next_page(&mut self.stdout)
     }
 
     /// Handle a resize event.
@@ -203,7 +179,16 @@ impl<'a> UiState<'a> {
             x: new_size.x - 2,
             y: new_size.y - 2,
         });
-        self.document_view.redraw(&mut self.stdout)
+        if let Some(help_view) = self.help_view.as_mut() {
+            help_view.resize(Vec2 {
+                x: new_size.x - 2,
+                y: new_size.y - 2,
+            });
+
+            help_view.redraw(&mut self.stdout)
+        } else {
+            self.document_view.redraw(&mut self.stdout)
+        }
     }
 
     /// Draw the status bar.
@@ -214,8 +199,85 @@ impl<'a> UiState<'a> {
             self.stdout,
             cursor::MoveTo(0, (self.size.y - 1) as u16),
             style::SetAttribute(Attribute::Reverse),
-            style::Print("[yap] q to exit, hjkl to scroll/pan"),
+            style::Print("[yap] q to exit, ? for help"),
             style::SetAttribute(Attribute::NoReverse),
         )
+    }
+
+    fn show_help(&mut self) -> crossterm::Result<()> {
+        if self.help_view.is_none() {
+            let help_view = DocumentView::new(
+                HelpDocument,
+                Vec2 {
+                    x: self.size.x - 2,
+                    y: self.size.y - 2,
+                },
+            );
+
+            execute!(self.stdout, terminal::Clear(ClearType::All))?;
+            self.draw_status_bar()?;
+            help_view.redraw(&mut self.stdout)?;
+
+            self.help_view = Some(help_view);
+        }
+
+        Ok(())
+    }
+
+    fn quit(&mut self) -> crossterm::Result<()> {
+        if self.help_view.is_some() {
+            self.help_view = None;
+            execute!(self.stdout, terminal::Clear(ClearType::All))?;
+            self.draw_status_bar()?;
+            self.document_view.redraw(&mut self.stdout)
+        } else {
+            self.should_exit = true;
+            Ok(())
+        }
+    }
+}
+
+macro_rules! impl_document_view_methods {
+    (
+        $(#[doc = $doc:expr])+
+        $method:ident,
+        $($rest:tt)*
+    ) => {
+        $(#[doc = $doc])+
+        pub fn $method(&mut self) -> crossterm::Result<()> {
+            if let Some(help_view) = self.help_view.as_mut() {
+                help_view.$method(&mut self.stdout)
+            } else {
+                self.document_view.$method(&mut self.stdout)
+            }
+        }
+
+        impl_document_view_methods!($($rest)*);
+    };
+
+    () => {};
+}
+
+impl<'a> UiState<'a> {
+    impl_document_view_methods! {
+        /// Pan left by one column if we are not at the first column of the document.
+        pan_left,
+
+        /// Scroll down by one line if there is at least one more line of text off-screen.
+        scroll_down,
+
+        /// Scroll up by one line if we are not at the top of the document.
+        scroll_up,
+
+        /// Pan right by one column if there is at least one more column of text off-screen.
+        pan_right,
+
+        /// Scroll the doucment up by up to half the height of the terminal if we are not at the top
+        /// of the document.
+        prev_page,
+
+        /// Scroll the document down by up to half the height of the terminal if there is more
+        /// document to view.
+        next_page,
     }
 }

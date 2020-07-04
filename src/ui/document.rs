@@ -15,6 +15,23 @@ use crossterm::{cursor, queue, style};
 
 use crate::ui::Vec2;
 
+/// The help text for yap.
+const HELP_TEXT: &[&'static str] = &[
+    "yap - yet another pager",
+    "",
+    "Key Bindings",
+    "",
+    "?     - Show this help",
+    "q     - Quit",
+    "j     - Scroll one line down",
+    "k     - Scroll one line up",
+    "h     - Pan one column left",
+    "l     - Pan one column right",
+    "PgUp  - Scroll up one page",
+    "PgDn  - Scroll down one page",
+    "Space - Scroll down one page",
+];
+
 /// A document that can be viewed.
 pub trait Document: Index<usize, Output = str> {
     /// Return the maximum line length of all lines in the document.
@@ -239,5 +256,27 @@ impl Document for FileDocument {
     }
     fn len(&self) -> usize {
         self.lines.len()
+    }
+}
+
+
+/// A document that shows the help text.
+pub struct HelpDocument;
+
+impl Index<usize> for HelpDocument {
+    type Output = str;
+
+    fn index(&self, index: usize) -> &str {
+        &HELP_TEXT[index]
+    }
+}
+
+impl Document for HelpDocument {
+    fn max_line_len(&self) -> usize {
+        HELP_TEXT.iter().map(|line| line.len()).max().unwrap()
+    }
+
+    fn len(&self) -> usize {
+        HELP_TEXT.len()
     }
 }
