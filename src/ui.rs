@@ -6,19 +6,23 @@
 //  option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cmp::{max, min};
+mod document;
+mod vec2;
+
 use std::io::{self, StdoutLock, Write};
-use std::ops::Range;
 
 use crossterm::event::{Event, EventStream, KeyCode};
 use crossterm::style::{self, Attribute};
 use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode, ClearType};
-use crossterm::{cursor, execute, queue};
+use crossterm::{cursor, execute};
 use futures::prelude::*;
 use futures::select;
 use futures::stream::TryStreamExt;
 use tokio::io::{AsyncRead, BufReader};
 use tokio::prelude::*;
+
+use crate::ui::document::Document;
+use crate::ui::vec2::Vec2;
 
 /// Run the yap UI.
 ///
@@ -55,34 +59,10 @@ where
     Ok(())
 }
 
-/// A two vector, representing sizes and positions in the terminal.
-///
-/// It is implicitly convertable from `(u16, u16)` because that is what crossterm uses for sizes.
-#[derive(Clone, Copy, Default)]
-pub struct Vec2 {
-    x: usize,
-    y: usize,
-}
-
-impl From<(u16, u16)> for Vec2 {
-    fn from((x, y): (u16, u16)) -> Self {
-        Vec2 {
-            x: x as usize,
-            y: y as usize,
-        }
-    }
-}
-
 /// The current yap UI state.
 struct UiState<'a> {
-    /// The lines of the document.
-    document: Vec<String>,
-
-    /// The length of the longest line in `document.
-    max_line_len: usize,
-
-    /// The offset into `document`.
-    offset: Vec2,
+    /// The document being viewed.
+    document: Document,
 
     /// Whether or not yap should exit.
     should_exit: bool,
@@ -98,9 +78,10 @@ impl<'a> UiState<'a> {
     /// Create a new UiState.
     pub fn new(stdout: StdoutLock<'a>, size: Vec2) -> Self {
         UiState {
-            document: Vec::with_capacity(size.y),
-            max_line_len: 0,
-            offset: Vec2::default(),
+            document: Document::new(Vec2 {
+                x: size.x - 2,
+                y: size.y - 2,
+            }),
             should_exit: false,
             size,
             stdout,
@@ -168,12 +149,8 @@ impl<'a> UiState<'a> {
     ///
     /// The line will be displayed if there is room to draw it.
     pub fn handle_line(&mut self, line: String) -> crossterm::Result<()> {
-        let index = self.document.len();
-        self.max_line_len = max(self.max_line_len, line.chars().count());
-        self.document.push(line);
-
-        if self.document_pane_rows().contains(&index) {
-            self.queue_line(index)?;
+        if let Some(index) = self.document.handle_line(line) {
+            self.document.queue_line(&mut self.stdout, index)?;
             self.stdout.flush()?;
         }
 
@@ -182,72 +159,34 @@ impl<'a> UiState<'a> {
 
     /// Pan left by one column if we are not at the first column of the document.
     fn pan_left(&mut self) -> crossterm::Result<()> {
-        if self.offset.x > 0 {
-            self.offset.x -= 1;
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.pan_left(&mut self.stdout)
     }
 
     /// Scroll down by one line if there is at least one more line of text off-screen.
     fn scroll_down(&mut self) -> crossterm::Result<()> {
-        if self.document.len() > self.offset.y + self.document_pane_rows().len() {
-            self.offset.y += 1;
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.scroll_down(&mut self.stdout)
     }
 
     /// Scroll up by one line if we are not at the top of the document.
     fn scroll_up(&mut self) -> crossterm::Result<()> {
-        if self.offset.y > 0 {
-            self.offset.y -= 1;
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.scroll_up(&mut self.stdout)
     }
 
     /// Pan right by one column if there is at least one more column of text off-screen.
     fn pan_right(&mut self) -> crossterm::Result<()> {
-        if self.max_line_len > self.offset.x + self.document_pane_cols().len() {
-            self.offset.x += 1;
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.pan_right(&mut self.stdout)
     }
 
     /// Scroll the doucment up by up to half the height of the terminal if we are not at the top of
     /// the document.
     fn prev_page(&mut self) -> crossterm::Result<()> {
-        let page_size = min(self.size.y / 2, self.offset.y);
-        if self.offset.y > 0 {
-            self.offset.y -= page_size;
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.prev_page(&mut self.stdout)
     }
 
     /// Scroll the document down by up to half the height of the terminal if there is more document
     /// to view.
     fn next_page(&mut self) -> crossterm::Result<()> {
-        let page_size = self.size.y / 2;
-
-        if self.document.len() >= self.document_pane_rows().len() + self.offset.y + page_size {
-            // Scroll down by an entire page if we can.
-            self.offset.y += page_size;
-            self.redraw_document()?;
-        } else if self.document.len() > self.document_pane_rows().len() + self.offset.y {
-            // Otherwise, if we are not at the end of the document, then scroll to the end.
-            self.offset.y = self.document.len() - self.document_pane_rows().len();
-            self.redraw_document()?;
-        }
-
-        Ok(())
+        self.document.next_page(&mut self.stdout)
     }
 
     /// Handle a resize event.
@@ -257,7 +196,11 @@ impl<'a> UiState<'a> {
         self.size = new_size;
         execute!(self.stdout, terminal::Clear(ClearType::All))?;
         self.draw_status_bar()?;
-        self.redraw_document()
+        self.document.resize(Vec2 {
+            x: new_size.x - 2,
+            y: new_size.y - 2,
+        });
+        self.document.redraw(&mut self.stdout)
     }
 
     /// Draw the status bar.
@@ -271,67 +214,5 @@ impl<'a> UiState<'a> {
             style::Print("[yap] q to exit, hjkl to scroll/pan"),
             style::SetAttribute(Attribute::NoReverse),
         )
-    }
-
-    /// Redraw the document to the screen.
-    fn redraw_document(&mut self) -> crossterm::Result<()> {
-        queue!(self.stdout, cursor::MoveTo(0, 0))?;
-
-        for y in self.visible_document_rows() {
-            self.queue_line(y)?;
-        }
-
-        self.stdout.flush()?;
-
-        Ok(())
-    }
-
-    /// Queue a line to be drawn.
-    ///
-    /// After queueing lines, they must be flushed with `self.stdout.flush()`.
-    fn queue_line(&mut self, index: usize) -> crossterm::Result<()> {
-        let line = &self.document[index];
-        let mut char_indices = line.char_indices().map(|(idx, _)| idx);
-
-        // Find the index of the character as position `self.offset.x`. If no character exists, then
-        // this line is too short to display on screen, so we can just clear the line.
-        let start = match char_indices.nth(self.offset.x) {
-            Some(char_index) => char_index,
-            None => {
-                return queue!(
-                    self.stdout,
-                    terminal::Clear(ClearType::UntilNewLine),
-                    cursor::MoveToNextLine(1),
-                );
-            }
-        };
-
-        // If the line would be too long to display from `start`, find the index of the character
-        // one past the screen. Otherwise, we can default to the string length.
-        let end = char_indices
-            .nth(self.document_pane_cols().len())
-            .unwrap_or(line.len());
-
-        queue!(
-            self.stdout,
-            style::Print(&self.document[index][start..end]),
-            terminal::Clear(ClearType::UntilNewLine),
-            cursor::MoveToNextLine(1),
-        )
-    }
-
-    /// Return the range of terminal rows that are in the document pane.
-    fn document_pane_rows(&self) -> Range<usize> {
-        0..self.size.y - 2
-    }
-
-    /// Return the range of terminal columns that are in the document pane.
-    fn document_pane_cols(&self) -> Range<usize> {
-        0..self.size.x - 1
-    }
-
-    /// Return the indicies of the document that are visible.
-    fn visible_document_rows(&self) -> Range<usize> {
-        self.offset.y..min(self.offset.y + self.size.y - 2, self.document.len())
     }
 }
